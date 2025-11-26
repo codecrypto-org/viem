@@ -37,60 +37,130 @@ export default function TransferPage() {
     const [walletClient, setWalletClient] = useState<any>(null);
 
     useEffect(() => {
-        if (typeof window !== 'undefined' && (window as any).ethereum) {
-            const client = createWalletClient({
-                chain: anvilChain,
-                transport: custom((window as any).ethereum),
-            });
-            setWalletClient(client);
+        if (typeof window !== 'undefined') {
+            const provider = getMetaMaskProvider();
 
-            // Check if already connected
-            client.requestAddresses().then((accounts) => {
-                if (accounts.length > 0) {
-                    setAccount(accounts[0]);
-                }
-            }).catch(() => {
-                // Ignore error if not connected
-            });
+            if (provider) {
+                const client = createWalletClient({
+                    chain: anvilChain,
+                    transport: custom(provider),
+                });
+                setWalletClient(client);
 
-            // Listen for account changes
-            const handleAccountsChanged = (accounts: string[]) => {
-                if (accounts.length > 0) {
-                    setAccount(accounts[0]);
-                } else {
-                    setAccount(null);
-                }
-            };
+                // Check if already connected
+                provider.request({ method: 'eth_accounts' })
+                    .then((accounts: string[]) => {
+                        if (accounts.length > 0) {
+                            setAccount(accounts[0]);
+                        }
+                    })
+                    .catch(() => {
+                        // Ignore error if not connected
+                    });
 
-            (window as any).ethereum.on('accountsChanged', handleAccountsChanged);
+                // Listen for account changes
+                const handleAccountsChanged = (accounts: string[]) => {
+                    if (accounts.length > 0) {
+                        setAccount(accounts[0]);
+                    } else {
+                        setAccount(null);
+                    }
+                };
 
-            return () => {
-                if ((window as any).ethereum.removeListener) {
-                    (window as any).ethereum.removeListener('accountsChanged', handleAccountsChanged);
-                }
-            };
+                provider.on('accountsChanged', handleAccountsChanged);
+
+                return () => {
+                    if (provider.removeListener) {
+                        provider.removeListener('accountsChanged', handleAccountsChanged);
+                    }
+                };
+            }
         }
     }, []);
 
     const connectWallet = async () => {
         setError(null);
-        if (!walletClient) {
+        const provider = getMetaMaskProvider();
+
+        if (!provider) {
             setError('MetaMask is not installed');
             return;
         }
 
         try {
-            const [address] = await walletClient.requestAddresses();
-            setAccount(address);
+            const accounts = await provider.request({ method: 'eth_requestAccounts' });
+            if (accounts.length > 0) {
+                setAccount(accounts[0]);
+            }
         } catch (err: any) {
             console.error(err);
             setError('Failed to connect wallet');
         }
     };
 
+    const getMetaMaskProvider = () => {
+        if (typeof window !== 'undefined' && (window as any).ethereum) {
+            const provider = (window as any).ethereum;
+            if (provider.providers) {
+                return provider.providers.find((p: any) => p.isMetaMask);
+            }
+            if (provider.isMetaMask) {
+                return provider;
+            }
+        }
+        return null;
+    };
+
+    const addChainToMetaMask = async () => {
+        const provider = getMetaMaskProvider();
+        if (provider) {
+            try {
+                await provider.request({
+                    method: 'wallet_addEthereumChain',
+                    params: [
+                        {
+                            chainId: `0x${anvilChain.id.toString(16)}`,
+                            chainName: anvilChain.name,
+                            nativeCurrency: anvilChain.nativeCurrency,
+                            rpcUrls: anvilChain.rpcUrls.default.http,
+                        },
+                    ],
+                });
+            } catch (error) {
+                console.error(error);
+                setError('Failed to add chain to MetaMask');
+            }
+        } else {
+            setError('MetaMask is not detected. If you have multiple wallets, try disabling Phantom.');
+        }
+    };
+
+    const switchChain = async () => {
+        const provider = getMetaMaskProvider();
+        if (provider) {
+            try {
+                await provider.request({
+                    method: 'wallet_switchEthereumChain',
+                    params: [{ chainId: `0x${anvilChain.id.toString(16)}` }],
+                });
+                return true;
+            } catch (error: any) {
+                // This error code indicates that the chain has not been added to MetaMask.
+                if (error.code === 4902) {
+                    await addChainToMetaMask();
+                    return true;
+                }
+                console.error(error);
+                setError('Failed to switch network');
+                return false;
+            }
+        }
+        return false;
+    };
+
     const handleTransfer = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!account || !walletClient) return;
+        if (!account) return;
 
         setLoading(true);
         setError(null);
@@ -101,11 +171,26 @@ export default function TransferPage() {
                 throw new Error('Invalid recipient address');
             }
 
-            const hash = await walletClient.sendTransaction({
-                account,
-                chainId: "3133731337",
-                to: recipient as `0x${string}`,
-                value: parseEther(amount),
+            const provider = getMetaMaskProvider();
+            if (!provider) {
+                throw new Error('MetaMask not found');
+            }
+
+            // Ensure we are on the correct chain
+            const switched = await switchChain();
+            if (!switched) {
+                setLoading(false);
+                return;
+            }
+
+            // Send transaction using provider directly
+            const hash = await provider.request({
+                method: 'eth_sendTransaction',
+                params: [{
+                    from: account,
+                    to: recipient,
+                    value: `0x${parseEther(amount).toString(16)}`,
+                }],
             });
 
             setTxHash(hash);
@@ -124,19 +209,26 @@ export default function TransferPage() {
 
                 {!account ? (
                     <div className="text-center">
-                        <p className="mb-4 text-gray-800">Connect your MetaMask wallet to send ETH.</p>
+                        <p className="mb-4 text-gray-900">Connect your MetaMask wallet to send ETH.</p>
                         <button
                             onClick={connectWallet}
-                            className="w-full py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium bg-orange-600 hover:bg-orange-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-orange-500"
+                            className="w-full py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-orange-600 hover:bg-orange-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-orange-500"
                         >
                             Connect MetaMask
                         </button>
                     </div>
                 ) : (
                     <>
-                        <div className="mb-6 p-3 rounded-md text-sm break-all ">
-                            <span className="font-semibold text-black">Connected:</span> {account}
+                        <div className="mb-6 p-3 bg-gray-50 rounded-md text-sm break-all">
+                            <span className="font-semibold text-gray-900">Connected:</span> <span className="text-gray-800">{account}</span>
                         </div>
+
+                        <button
+                            onClick={addChainToMetaMask}
+                            className="mb-6 w-full py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-900 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                        >
+                            Add Anvil Chain to MetaMask
+                        </button>
 
                         <form onSubmit={handleTransfer} className="space-y-4">
 
@@ -150,7 +242,7 @@ export default function TransferPage() {
                                     value={recipient}
                                     onChange={(e) => setRecipient(e.target.value)}
                                     placeholder="0x..."
-                                    className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                    className="w-full px-4 py-2 border border-gray-300 rounded-md text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                                     required
                                 />
                             </div>
@@ -166,7 +258,7 @@ export default function TransferPage() {
                                     value={amount}
                                     onChange={(e) => setAmount(e.target.value)}
                                     placeholder="0.0"
-                                    className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                    className="w-full px-4 py-2 border border-gray-300 rounded-md text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                                     required
                                 />
                             </div>
