@@ -1,0 +1,17 @@
+{
+  "name": "anvil-viem-example",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "tsx anvil-example.ts",
+    "list-accounts": "tsx list-accounts.ts",
+    "token-ops": "tsx token-operations.ts"
+  },
+  "dependencies": {
+    "viem": "^2.21.54"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
