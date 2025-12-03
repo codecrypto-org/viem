@@ -28,7 +28,8 @@ const anvilChain: Chain = {
 };
 
 export default function TransferPage() {
-    const [account, setAccount] = useState<string | null>(null);
+    const [accounts, setAccounts] = useState<string[]>([]);
+    const [activeAccount, setActiveAccount] = useState<string | null>(null);
     const [recipient, setRecipient] = useState('');
     const [amount, setAmount] = useState('');
     const [loading, setLoading] = useState(false);
@@ -49,9 +50,10 @@ export default function TransferPage() {
 
                 // Check if already connected
                 provider.request({ method: 'eth_accounts' })
-                    .then((accounts: string[]) => {
-                        if (accounts.length > 0) {
-                            setAccount(accounts[0]);
+                    .then((accs: string[]) => {
+                        if (accs.length > 0) {
+                            setAccounts(accs);
+                            setActiveAccount(accs[0]);
                         }
                     })
                     .catch(() => {
@@ -59,11 +61,14 @@ export default function TransferPage() {
                     });
 
                 // Listen for account changes
-                const handleAccountsChanged = (accounts: string[]) => {
-                    if (accounts.length > 0) {
-                        setAccount(accounts[0]);
+                const handleAccountsChanged = (accs: string[]) => {
+                    setAccounts(accs);
+                    if (accs.length > 0) {
+                        // If the currently active account is still in the list, keep it.
+                        // Otherwise, switch to the first one.
+                        setActiveAccount(prev => (prev && accs.includes(prev) ? prev : accs[0]));
                     } else {
-                        setAccount(null);
+                        setActiveAccount(null);
                     }
                 };
 
@@ -88,9 +93,10 @@ export default function TransferPage() {
         }
 
         try {
-            const accounts = await provider.request({ method: 'eth_requestAccounts' });
-            if (accounts.length > 0) {
-                setAccount(accounts[0]);
+            const accs = await provider.request({ method: 'eth_requestAccounts' });
+            if (accs.length > 0) {
+                setAccounts(accs);
+                setActiveAccount(accs[0]);
             }
         } catch (err: any) {
             console.error(err);
@@ -158,9 +164,43 @@ export default function TransferPage() {
         return false;
     };
 
+
+    const changeAccount = async () => {
+        const provider = getMetaMaskProvider();
+        if (provider) {
+            try {
+                await provider.request({
+                    method: 'wallet_requestPermissions',
+                    params: [{ eth_accounts: {} }],
+                });
+
+                // Fetch all connected accounts after permission change
+                const accs = await provider.request({ method: 'eth_accounts' });
+                setAccounts(accs);
+
+                // If we have accounts, try to find the one the user just selected if possible,
+                // or just default to the first one if not.
+                // Note: wallet_requestPermissions response might give a hint, but eth_accounts gives the full list.
+                // For simplicity in this "show all" mode, we just update the list.
+                // If the user wants to select a specific one, they can now click it in the list.
+                if (accs.length > 0) {
+                    // We don't necessarily force the active account here, 
+                    // we let the user choose from the list, or default to the first one if none active.
+                    if (!activeAccount || !accs.includes(activeAccount)) {
+                        setActiveAccount(accs[0]);
+                    }
+                }
+
+            } catch (error) {
+                console.error(error);
+                setError('Failed to change account');
+            }
+        }
+    };
+
     const handleTransfer = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!account) return;
+        if (!activeAccount) return;
 
         setLoading(true);
         setError(null);
@@ -187,7 +227,7 @@ export default function TransferPage() {
             const hash = await provider.request({
                 method: 'eth_sendTransaction',
                 params: [{
-                    from: account,
+                    from: activeAccount,
                     to: recipient,
                     value: `0x${parseEther(amount).toString(16)}`,
                 }],
@@ -207,7 +247,7 @@ export default function TransferPage() {
             <div className="bg-white p-8 rounded-lg shadow-md w-full max-w-md">
                 <h1 className="text-2xl font-bold mb-6 text-center text-gray-900">Transfer ETH</h1>
 
-                {!account ? (
+                {accounts.length === 0 ? (
                     <div className="text-center">
                         <p className="mb-4 text-gray-900">Connect your MetaMask wallet to send ETH.</p>
                         <button
@@ -219,16 +259,45 @@ export default function TransferPage() {
                     </div>
                 ) : (
                     <>
-                        <div className="mb-6 p-3 bg-gray-50 rounded-md text-sm break-all">
-                            <span className="font-semibold text-gray-900">Connected:</span> <span className="text-gray-800">{account}</span>
+                        <div className="mb-6">
+                            <h3 className="text-sm font-medium text-gray-700 mb-2">Connected Accounts:</h3>
+                            <div className="space-y-2 max-h-96 overflow-y-auto">
+                                {accounts.map((acc) => (
+                                    <div
+                                        key={acc}
+                                        onClick={() => setActiveAccount(acc)}
+                                        className={`p-3 rounded-md text-sm break-all cursor-pointer border ${activeAccount === acc
+                                            ? 'bg-blue-50 border-blue-500 ring-1 ring-blue-500'
+                                            : 'bg-gray-50 border-gray-200 hover:bg-gray-100'
+                                            }`}
+                                    >
+                                        <div className="flex items-center justify-between">
+                                            <span className={`${activeAccount === acc ? 'text-blue-900 font-semibold' : 'text-gray-800'}`}>
+                                                {acc}
+                                            </span>
+                                            {activeAccount === acc && (
+                                                <span className="text-blue-600 text-xs font-bold uppercase ml-2">Active</span>
+                                            )}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
                         </div>
 
-                        <button
-                            onClick={addChainToMetaMask}
-                            className="mb-6 w-full py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-900 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-                        >
-                            Add Anvil Chain to MetaMask
-                        </button>
+                        <div className="flex space-x-4 mb-6">
+                            <button
+                                onClick={addChainToMetaMask}
+                                className="flex-1 py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-900 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                            >
+                                Add Anvil Chain
+                            </button>
+                            <button
+                                onClick={changeAccount}
+                                className="flex-1 py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-900 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                            >
+                                Change Account
+                            </button>
+                        </div>
 
                         <form onSubmit={handleTransfer} className="space-y-4">
 
